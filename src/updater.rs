@@ -49,7 +49,7 @@ pub struct PatchInfo {
     pub download_url: String,
 }
 
-#[derive(Debug)]
+#[allow(dead_code)]
 pub enum UpdateProgress {
     CheckingForUpdates,
     UpdatesAvailable(Vec<PatchInfo>),
@@ -267,7 +267,7 @@ impl Updater {
         }
         
         // Применяем патчи последовательно
-        for (i, patch) in applicable_patches.iter().enumerate() {
+        for (_i, patch) in applicable_patches.iter().enumerate() {
             // Скачиваем патч
             let patch_path = self.download_patch(patch, &mut progress_callback)?;
             

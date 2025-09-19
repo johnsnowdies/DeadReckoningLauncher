@@ -87,7 +87,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Debug)]
 struct LauncherApp {
     config: AppConfig,
     app_shutdown: bool,
@@ -340,7 +339,6 @@ impl eframe::App for LauncherApp {
                     let about_button = ui.add_sized([180., 35.], Button::new("About Launcher"));
                     let quit_button = ui.add_sized([180., 35.], Button::new("Quit"));
                     if play_button.clicked() {
-                        println!("{:?}", self);
                         let game = Game::new(self.config.renderer, self.config.use_avx);
                         let mut args: Vec<String> = Vec::new();
                         let shadows_arg: String = match self.config.shadow_map {
@@ -386,7 +384,6 @@ impl eframe::App for LauncherApp {
                     if clear_button.clicked() {
                         let mut cache_path: PathBuf = env::current_dir().unwrap();
                         cache_path.push("appdata\\shaders_cache");
-                        println!("{:?}", cache_path);
                         if !cache_path.exists() {
                             let _ = MessageDialog::new()
                             .set_title("Path not found")
