@@ -4,20 +4,22 @@ use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
     process::exit,
-    sync::Arc,
+    sync::{Arc, atomic::{AtomicBool, Ordering}},
 };
 
 mod app_config;
 mod game;
 mod styles;
+mod updater;
 
 use app_config::{AppConfig, Renderer, ShadowMapSize};
 use eframe::egui::{
-    self, vec2, Button, ComboBox, FontData, FontDefinitions, FontFamily, IconData, RichText, Stroke, Vec2, ViewportBuilder
+    self, vec2, Button, ComboBox, FontData, FontDefinitions, FontFamily, IconData, RichText, Stroke, Vec2, ViewportBuilder,
 };
 use game::Game;
 use rfd::MessageDialog;
 use styles::Styles;
+use updater::{Updater, UpdaterError};
 
 fn show_error(title: &str, desc: &str) {
     MessageDialog::new()
@@ -68,14 +70,15 @@ fn main() -> eframe::Result<()> {
     let viewport = ViewportBuilder::default()
         .with_maximize_button(false)
         .with_resizable(false)
-        .with_inner_size(Vec2 { x: 510.0, y: 195.0 })
+        .with_inner_size(Vec2 { x: 500.0, y: 225.0 })
         .with_icon(icon_data);
 
     eframe::run_native(
-        "Anomaly Launcher v1.0.0-rc1",
+        "Dead Reckoning",
         eframe::NativeOptions {
             viewport,
             vsync: false,
+            centered: true,
             ..Default::default()
         },
         Box::new(|cc| {
@@ -88,6 +91,9 @@ fn main() -> eframe::Result<()> {
 struct LauncherApp {
     config: AppConfig,
     app_shutdown: bool,
+    is_updating: Arc<AtomicBool>,
+    new_version: Arc<std::sync::Mutex<Option<String>>>,
+    config_update: Arc<std::sync::Mutex<Option<AppConfig>>>,
 }
 
 impl LauncherApp {
@@ -102,9 +108,13 @@ impl LauncherApp {
         });
 
         cc.egui_ctx.set_fonts(load_fonts());
+
         LauncherApp {
             config,
             app_shutdown: false,
+            is_updating: Arc::new(AtomicBool::new(false)),
+            new_version: Arc::new(std::sync::Mutex::new(None)),
+            config_update: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -134,6 +144,14 @@ impl fmt::Display for ShadowMapSize {
 
 impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Проверяем, есть ли обновление конфигурации
+        if let Ok(mut config_guard) = self.config_update.lock() {
+            if let Some(updated_config) = config_guard.take() {
+                // Обновляем основную конфигурацию
+                self.config = updated_config;
+            }
+        }
+        
         egui::CentralPanel::default().show(ctx, |ui| {
             if ui.visuals().dark_mode {
                 ui.style_mut().visuals = Styles::dark();
@@ -147,9 +165,10 @@ impl eframe::App for LauncherApp {
                     
                     ui.vertical(|ui| {
                         ui.style_mut().spacing.item_spacing = vec2(0., 0.);
-                        ui.label(RichText::new("Anomaly Launcher").size(24.0));
+                        ui.label(RichText::new("Dead Reckoning").size(24.0));
                         ui.horizontal(|ui| {
-                            ui.label("Made by Konstantin Zhigaylo for stalkers.");
+                            ui.label("Modpack by Eslider");
+
                         });
                     });
                     
@@ -183,6 +202,23 @@ impl eframe::App for LauncherApp {
                                     ui.selectable_value(&mut self.config.shadow_map, ShadowMapSize::Size3072, "3072");
                                     ui.selectable_value(&mut self.config.shadow_map, ShadowMapSize::Size4096, "4096");
                                 });
+                                // Отображаем версию, если она есть
+                            // Сначала проверяем, есть ли новая версия
+                            let version_to_display = if let Ok(version_guard) = self.new_version.lock() {
+                                if let Some(ref new_ver) = *version_guard {
+                                    new_ver.clone()
+                                } else if let Some(ref current_ver) = self.config.version {
+                                    current_ver.clone()
+                                } else {
+                                    "Unknown".to_string()
+                                }
+                            } else if let Some(ref current_ver) = self.config.version {
+                                current_ver.clone()
+                            } else {
+                                "Unknown".to_string()
+                            };
+                            
+                            ui.label(format!("Version: {}", version_to_display));
                         });
                         ui.vertical(|ui| {
                             ui.set_min_size(vec2(150., 100.));
@@ -191,11 +227,115 @@ impl eframe::App for LauncherApp {
                             ui.checkbox(&mut self.config.prefetch_sounds, "Prefetch Sounds");
                             ui.checkbox(&mut self.config.use_avx, "Use AVX");
                         });
+                        
                     });
+
+                   
                     
                 });
                 ui.vertical(|ui| {
                     let play_button = ui.add_sized([180., 65.], Button::new("Play"));
+                    
+                    // Добавляем кнопку обновления, если настроен URL
+                    if self.config.update_url.is_some() {
+                        let update_text = if self.is_updating.load(Ordering::Relaxed) {
+                            "Updating..."
+                        } else {
+                            "Check for Updates"
+                        };
+                        
+                        let update_button = ui.add_sized([180., 35.], Button::new(update_text));
+                        if update_button.clicked() && !self.is_updating.load(Ordering::Relaxed) {
+                            self.is_updating.store(true, Ordering::Relaxed);
+                            
+                            // Запускаем процесс обновления в отдельном потоке
+                            let config_clone = self.config.clone();
+                            let ctx_clone = ctx.clone();
+                            let is_updating_clone = self.is_updating.clone();
+                            let new_version_clone = self.new_version.clone();
+                            let config_update_clone = self.config_update.clone();
+                            
+                            std::thread::spawn(move || {
+                                match Updater::new(config_clone.clone()) {
+                                    Ok(mut updater) => {
+                                        let result = updater.update(|_progress| {
+                                            // Обновляем UI при изменении прогресса
+                                            ctx_clone.request_repaint();
+                                        });
+                                        
+                                        // Сбрасываем флаг обновления
+                                        is_updating_clone.store(false, Ordering::Relaxed);
+                                        ctx_clone.request_repaint();
+                                        
+                                        match result {
+                                            Ok(new_version) => {
+                                                // Обновляем версию в конфигурации
+                                                let mut updated_config = config_clone.clone();
+                                                updated_config.version = Some(new_version.clone());
+                                                
+                                                // Обновляем разделяемое значение версии
+                                                if let Ok(mut version_guard) = new_version_clone.lock() {
+                                                    *version_guard = Some(new_version.clone());
+                                                }
+                                                
+                                                // Сохраняем обновленную конфигурацию для главного потока
+                                                if let Ok(mut config_guard) = config_update_clone.lock() {
+                                                    *config_guard = Some(updated_config.clone());
+                                                }
+                                                
+                                                // Сохраняем обновленную конфигурацию в файл
+                                                if let Err(_e) = updated_config.write() {
+                                                    MessageDialog::new()
+                                                        .set_title("Configuration Save Error")
+                                                        .set_description(format!("Failed to save updated configuration:"))
+                                                        .set_level(rfd::MessageLevel::Error)
+                                                        .set_buttons(rfd::MessageButtons::Ok)
+                                                        .show();
+                                                }
+                                                
+                                                // Обновление успешно завершено
+                                                MessageDialog::new()
+                                                    .set_title("Update Complete")
+                                                    .set_description(format!("Successfully updated to version {}", new_version))
+                                                    .set_level(rfd::MessageLevel::Info)
+                                                    .set_buttons(rfd::MessageButtons::Ok)
+                                                    .show();
+                                            },
+                                            Err(UpdaterError::NoUpdatesAvailable) => {
+                                                MessageDialog::new()
+                                                    .set_title("No Updates Available")
+                                                    .set_description("You are already running the latest version.")
+                                                    .set_level(rfd::MessageLevel::Info)
+                                                    .set_buttons(rfd::MessageButtons::Ok)
+                                                    .show();
+                                            },
+                                            Err(e) => {
+                                                MessageDialog::new()
+                                                    .set_title("Update Failed")
+                                                    .set_description(format!("Failed to update: {}", e))
+                                                    .set_level(rfd::MessageLevel::Error)
+                                                    .set_buttons(rfd::MessageButtons::Ok)
+                                                    .show();
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        MessageDialog::new()
+                                            .set_title("Update Error")
+                                            .set_description(format!("Failed to initialize updater: {}", e))
+                                            .set_level(rfd::MessageLevel::Error)
+                                            .set_buttons(rfd::MessageButtons::Ok)
+                                            .show();
+                                        
+                                        // Сбрасываем флаг обновления
+                                        is_updating_clone.store(false, Ordering::Relaxed);
+                                        ctx_clone.request_repaint();
+                                    }
+                                }
+                            });
+                        }
+                    }
+                    
                     let clear_button = ui.add_sized([180., 35.], Button::new("Clear Shader Cache"));
                     let about_button = ui.add_sized([180., 35.], Button::new("About Launcher"));
                     let quit_button = ui.add_sized([180., 35.], Button::new("Quit"));

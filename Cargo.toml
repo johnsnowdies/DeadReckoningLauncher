@@ -9,6 +9,12 @@ rfd = { version = "0.15.4", default-features = false }
 serde = { version = "1.0.219", features = ["derive"] }
 toml = "0.9.5"
 image = "0.25.8"
+reqwest = { version = "0.12.0", features = ["blocking", "json"] }
+zip = "0.6.6"
+semver = "1.0.21"
+anyhow = "1.0.81"
+futures = "0.3.30"
+tokio = { version = "1.36.0", features = ["full"] }
 
 [profile.dev]
 incremental = true

@@ -19,13 +19,15 @@ pub enum ShadowMapSize {
     Size4096,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AppConfig {
     pub renderer: Renderer,
     pub use_avx: bool,
     pub shadow_map: ShadowMapSize,
     pub debug: bool,
     pub prefetch_sounds: bool,
+    pub version: Option<String>,
+    pub update_url: Option<String>,
 }
 
 pub enum AppConfigError {
@@ -42,6 +44,8 @@ impl Default for AppConfig {
             debug: true,
             use_avx: true,
             prefetch_sounds: false,
+            version: Some("1.0.0".to_string()),
+            update_url: None,
         }
     }
 }
